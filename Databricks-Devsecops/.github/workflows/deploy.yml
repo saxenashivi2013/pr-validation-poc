@@ -1,0 +1,33 @@
+name: Deploy bundle
+
+# Manual deploy (and optional run) of the Databricks job to your workspace.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Bundle target
+        type: choice
+        options: [dev, prod]
+        default: dev
+      run_job:
+        description: Run the pipeline after deploying
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      DATABRICKS_HOST:  ${{ secrets.DATABRICKS_HOST }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: databricks/setup-cli@main
+      - run: databricks bundle validate -t ${{ inputs.target }}
+      - run: databricks bundle deploy -t ${{ inputs.target }}
+      - name: Run pipeline
+        if: inputs.run_job
+        run: databricks bundle run retail_pipeline -t ${{ inputs.target }}

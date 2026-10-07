@@ -1,0 +1,177 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PR Guard — GitHub Actions Template
+#
+# SETUP:
+#   1. Copy this file to  .github/workflows/pr-guard.yml  in your target repo.
+#   2. Copy the scripts/ folder to  .github/pr-guard/     in your target repo.
+#   3. Set the required Secrets and Variables listed in the README.
+#   4. Adjust the env block below to match your project.
+#
+# FEATURES (each independently toggle-able):
+#   • LLM Summary      — per-file change descriptions via OpenAI / Anthropic / Databricks
+#   • Tests + Coverage — pytest with coverage report embedded in the PR comment
+#   • Dependency Check — OSV vulnerability scan of your requirements file(s)
+#
+# COMMENT BEHAVIOUR:
+#   • First PR push   → creates a new PR comment
+#   • Subsequent push → edits that comment in-place (no spam)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: PR Guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    # Restrict to specific target branches if desired:
+    # branches: [main, develop, release/**]
+
+# Minimum permissions — no elevated access needed
+permissions:
+  contents: read
+  pull-requests: write
+
+# ─── Configuration ────────────────────────────────────────────────────────────
+# All values here can be overridden by repository Variables (Settings → Variables)
+# without editing this file.  Secret values must always come from Secrets.
+env:
+
+  # ── Feature flags ────────────────────────────────────────────────────────────
+  ENABLE_LLM_SUMMARY: "true"          # AI-generated per-file change summary
+  ENABLE_TESTS:       "true"          # Run pytest + coverage
+  ENABLE_DEP_CHECK:   "true"          # OSV vulnerability scan
+
+  # ── LLM provider ─────────────────────────────────────────────────────────────
+  # Supported: openai | anthropic | databricks
+  LLM_PROVIDER: "databricks"
+
+  # Model name — must match the selected provider:
+  #   openai:      gpt-4o (default) | gpt-4o-mini | o3-mini
+  #   anthropic:   claude-opus-5 | claude-sonnet-5 | claude-haiku-4-5
+  #   databricks:  databricks-meta-llama-3-3-70b-instruct (free Llama 3.3 70B)
+  #                databricks-dbrx-instruct | databricks-mixtral-8x7b-instruct
+  LLM_MODEL: "databricks-meta-llama-3-3-70b-instruct"
+
+  # Maximum characters of diff sent to the LLM (keep prompt cost under control)
+  MAX_DIFF_CHARS: "20000"
+
+  # ── Tests + Coverage ──────────────────────────────────────────────────────────
+  # Minimum coverage % — shown as a warning in the PR comment if not met.
+  # Does NOT fail the job by default; set --cov-fail-under in PYTEST_ARGS to block merges.
+  COVERAGE_THRESHOLD: "80"
+
+  # Extra pytest arguments (e.g. "-x" to stop on first failure, "-k test_api")
+  PYTEST_ARGS: ""
+
+  # Directory / file pattern pytest should discover tests in
+  PYTEST_PATHS: "tests/"
+
+  # Source directory for coverage measurement
+  COVERAGE_SRC: "src"
+
+  # ── Dependency check ─────────────────────────────────────────────────────────
+  # Comma-separated severity levels to include in the comment.
+  # Supported: critical, high, medium, low, unknown
+  DEP_SEVERITIES: "critical,high,medium,unknown"
+
+  # Space-separated list of requirements files to scan.
+  # Use multiple paths for projects with split requirements (e.g. prod + dev).
+  REQUIREMENTS_FILES: "requirements.txt"
+
+  # ── Databricks-specific (set in Secrets if using LLM_PROVIDER=databricks) ───
+  # DATABRICKS_HOST  → secrets.DATABRICKS_HOST
+  # DATABRICKS_TOKEN → secrets.DATABRICKS_TOKEN
+
+# ─── Jobs ────────────────────────────────────────────────────────────────────
+jobs:
+  pr-guard:
+    name: "PR Guard"
+    runs-on: ubuntu-latest
+    # Don't run on draft PRs — remove this line if you want draft coverage
+    if: github.event.pull_request.draft == false
+
+    steps:
+      # ── 1. Check out the PR head ───────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so we can compute accurate diffs
+          fetch-depth: 0
+
+      # ── 2. Python runtime ─────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            .github/pr-guard/requirements.txt
+
+      - name: Install project dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+      - name: Install PR Guard dependencies
+        run: pip install -r .github/pr-guard/requirements.txt
+
+      # ── 3. Run tests + coverage ────────────────────────────────────────────
+      - name: Run tests with coverage
+        if: env.ENABLE_TESTS == 'true'
+        # Continue even if tests fail — guard still posts the comment
+        continue-on-error: true
+        run: |
+          pytest ${{ env.PYTEST_PATHS }} \
+            ${{ env.PYTEST_ARGS }} \
+            --json-report \
+            --json-report-file=pytest_report.json \
+            --cov=${{ env.COVERAGE_SRC }} \
+            --cov-report=json:coverage.json \
+            --cov-report=term-missing \
+            -q
+          echo "Pytest exit code: $?"
+
+      # ── 4. Fetch the PR diff ──────────────────────────────────────────────
+      - name: Fetch PR diff
+        run: |
+          gh pr diff "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            > pr_diff.txt
+          echo "Diff size: $(wc -c < pr_diff.txt) bytes"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # ── 5. Run PR Guard ────────────────────────────────────────────────────
+      - name: Run PR Guard
+        id: pr-guard
+        run: python .github/pr-guard/pr_guard.py
+        env:
+          # GitHub context — auto-populated, no changes needed
+          GH_TOKEN:         ${{ github.token }}
+          REPO_FULL_NAME:   ${{ github.repository }}
+          PR_NUMBER:        ${{ github.event.pull_request.number }}
+          PR_TITLE:         ${{ github.event.pull_request.title }}
+          PR_BODY:          ${{ github.event.pull_request.body }}
+          HEAD_SHA:         ${{ github.event.pull_request.head.sha }}
+          BASE_BRANCH:      ${{ github.event.pull_request.base.ref }}
+          PR_AUTHOR:        ${{ github.event.pull_request.user.login }}
+
+          # Test report files (written by step 3 above)
+          PYTEST_REPORT_FILE: pytest_report.json
+          COVERAGE_FILE:      coverage.json
+
+          # LLM API keys — set in repo Secrets
+          OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          DATABRICKS_HOST:    ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN:   ${{ secrets.DATABRICKS_TOKEN }}
+
+      # ── 6. Surface the comment URL for easy navigation ─────────────────────
+      - name: Comment summary
+        if: always()
+        run: |
+          if [ -f pr_comment_url.txt ]; then
+            echo "### PR Guard comment" >> "$GITHUB_STEP_SUMMARY"
+            echo "$(cat pr_comment_url.txt)" >> "$GITHUB_STEP_SUMMARY"
+          fi

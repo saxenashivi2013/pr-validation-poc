@@ -1,0 +1,23 @@
+[project]
+name = "retail-lakehouse"
+version = "0.1.0"
+description = "Medallion pipeline demo on Databricks Free Edition with PR Guard CI"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/run_stage.py"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E701", "E704"]   # one-line stage functions in stages.py are intentional

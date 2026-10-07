@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.coverage
+coverage.json
+pytest_report.json
+pr_diff.txt
+pr_comment_url.txt
+spark-warehouse/
+metastore_db/
+derby.log
+.databricks/
+.ruff_cache/

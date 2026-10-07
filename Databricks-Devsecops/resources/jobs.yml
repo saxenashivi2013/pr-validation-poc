@@ -1,0 +1,104 @@
+# One serverless job, expressed as a DAG of small tasks.
+#
+#   generate ─┬─ bronze_orders ────── silver_orders ──┬─ gold_daily_sales ───────┐
+#             ├─ bronze_customers ─── silver_customers ┼─ gold_customer_segments ─┼─ dq
+#             └─ bronze_products ──── silver_products ─┴─ gold_product_performance┘
+#
+# Free Edition only offers serverless compute, so tasks use an `environment_key`
+# instead of a cluster definition.
+
+resources:
+  jobs:
+    retail_pipeline:
+      name: retail-lakehouse-pipeline
+      max_concurrent_runs: 1
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+
+      parameters:
+        - name: n_orders
+          default: ${var.n_orders}
+
+      # Paused by default — flip to UNPAUSED to run nightly at 02:00 UTC.
+      schedule:
+        quartz_cron_expression: "0 0 2 * * ?"
+        timezone_id: UTC
+        pause_status: PAUSED
+
+      tasks:
+        - task_key: generate
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/run_stage.py
+            parameters: ["--stage", "generate", "--catalog", "${var.catalog}", "--schema", "${var.schema}", "--n-orders", "{{job.parameters.n_orders}}"]
+
+        # ── Bronze ──────────────────────────────────────────────────────────
+        - task_key: bronze_orders
+          depends_on: [{task_key: generate}]
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/run_stage.py
+            parameters: ["--stage", "bronze_orders", "--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+        - task_key: bronze_customers
+          depends_on: [{task_key: generate}]
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/run_stage.py
+            parameters: ["--stage", "bronze_customers", "--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+        - task_key: bronze_products
+          depends_on: [{task_key: generate}]
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/run_stage.py
+            parameters: ["--stage", "bronze_products", "--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+
+        # ── Silver ──────────────────────────────────────────────────────────
+        - task_key: silver_orders
+          depends_on: [{task_key: bronze_orders}]
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/run_stage.py
+            parameters: ["--stage", "silver_orders", "--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+        - task_key: silver_customers
+          depends_on: [{task_key: bronze_customers}]
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/run_stage.py
+            parameters: ["--stage", "silver_customers", "--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+        - task_key: silver_products
+          depends_on: [{task_key: bronze_products}]
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/run_stage.py
+            parameters: ["--stage", "silver_products", "--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+
+        # ── Gold ────────────────────────────────────────────────────────────
+        - task_key: gold_daily_sales
+          depends_on: [{task_key: silver_orders}]
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/run_stage.py
+            parameters: ["--stage", "gold_daily_sales", "--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+        - task_key: gold_customer_segments
+          depends_on: [{task_key: silver_orders}, {task_key: silver_customers}]
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/run_stage.py
+            parameters: ["--stage", "gold_customer_segments", "--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+        - task_key: gold_product_performance
+          depends_on: [{task_key: silver_orders}, {task_key: silver_products}]
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/run_stage.py
+            parameters: ["--stage", "gold_product_performance", "--catalog", "${var.catalog}", "--schema", "${var.schema}"]
+
+        # ── Quality gate (fails the run if any check fails) ─────────────────
+        - task_key: dq
+          depends_on: [{task_key: gold_daily_sales}, {task_key: gold_customer_segments}, {task_key: gold_product_performance}]
+          environment_key: default
+          spark_python_task:
+            python_file: ../src/run_stage.py
+            parameters: ["--stage", "dq", "--catalog", "${var.catalog}", "--schema", "${var.schema}"]

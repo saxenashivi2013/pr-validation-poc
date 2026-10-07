@@ -1,0 +1,3 @@
+# Runtime / test dependencies for the retail_lakehouse project.
+# Databricks serverless ships its own PySpark; this pin is for local + CI test runs.
+pyspark==3.5.3
