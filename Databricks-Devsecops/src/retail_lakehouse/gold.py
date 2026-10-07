@@ -14,7 +14,7 @@ def revenue_orders(orders: DataFrame) -> DataFrame:
 
 
 def daily_sales(orders: DataFrame) -> DataFrame:
-    """Revenue per day and ship country with a 7-day moving average."""
+    """Aggregate realised revenue per day and shipping country with a 7-day moving average."""
     daily = (
         revenue_orders(orders)
         .groupBy("order_date", "ship_country")
